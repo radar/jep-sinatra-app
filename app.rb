@@ -1,37 +1,35 @@
 require 'sinatra'
 require 'sinatra/reloader'
 
-require 'json'
+require_relative 'environment'
 
 before do
   response['Access-Control-Allow-Origin'] = '*'
   content_type :json
 end
 
-def rating_questions
-  JSON.parse(File.read('db.json'))['ratingQuestions']
-end
-
-def write_questions(questions)
-  File.write("db.json", { "ratingQuestions" => questions }.to_json)
+def serialize_question(question)
+  RatingQuestionSerializer.new(question)
 end
 
 def find_question(id)
-  rating_questions.find { |q| q["id"] == id }
+  question = RatingQuestion.where(id: id).first
+
+  return question if question
+
+  # If no question, return a 404 and halt
+  status 404
+  halt
 end
 
 get '/ratingQuestions' do
-  rating_questions.to_json
+  RatingQuestion.all.map { |question| serialize_question(question) }.to_json
 end
 
 get '/ratingQuestions/:id' do
-  question = find_question(params[:id].to_i)
-  unless question
-    status 404
-    return
-  end
+  question = find_question(params[:id])
 
-  question.to_json
+  serialize_question(question).to_json
 end
 
 post '/ratingQuestions' do
@@ -44,21 +42,15 @@ post '/ratingQuestions' do
 
   json_params = JSON.parse(body)
 
-  last_id = 0 if rating_questions.none?
-  last_id ||= rating_questions.max_by { |q| q["id"] }["id"]
+  rating_question = RatingQuestion.new(json_params)
 
-  if json_params["title"].strip == ''
+  if rating_question.save
+    status 201
+    serialize_question(rating_question).to_json
+  else
     status 422
-    return { "errors" => { "title" => ["cannot be blank"] } }.to_json
+    { "errors" => rating_question.errors }.to_json
   end
-  new_question = {
-    "id" => last_id + 1
-  }.merge(json_params)
-
-  write_questions(rating_questions.push(new_question))
-
-  status 201
-  new_question.to_json
 end
 
 def update
@@ -71,33 +63,19 @@ def update
 
   json_params = JSON.parse(body)
 
-  updated_questions = rating_questions
-  question = updated_questions.find { |q| q["id"] == params[:id].to_i }
+  question = find_question(params[:id])
 
-  unless question
-    status 404
-    return
+  if question.update(json_params)
+    return serialize_question(question).to_json
   end
-
-  question.merge!(json_params)
-
-  write_questions(updated_questions)
-
-  question.to_json
 end
 
 put('/ratingQuestions/:id') { update }
 patch('/ratingQuestions/:id') { update }
 
 delete '/ratingQuestions/:id' do
-  id = params[:id].to_i
+  question = find_question(params[:id])
 
-  unless find_question(id)
-    status 404
-    return
-  end
-
-  new_questions = rating_questions.keep_if { |q| q["id"] != id }
-  write_questions(new_questions)
+  question.destroy
   status 204
 end
